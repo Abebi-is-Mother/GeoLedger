@@ -2,21 +2,7 @@
 ;; It represents land parcels as NFTs (SIP-009) and manages their associated metadata,
 ;; including location, area, and zoning classification.
 ;; It also includes a system for proposing and approving zoning changes.
-
-(impl-trait .sip-009-nft-trait.nft-trait)
-
-;; --- Trait Definitions ---
-;; This defines the structure for a zoning change proposal.
-(define-trait proposal-trait
-  ((get-proposal (uint) (response {
-    proposer: principal,
-    parcel-id: uint,
-    proposed-zoning: (string-ascii 40),
-    is-approved: bool,
-    votes-for: uint,
-    votes-against: uint
-  } uint))
-))
+;; This contract implements SIP-009 NFT standard functions directly.
 
 ;; --- Constants and Error Codes ---
 (define-constant CONTRACT-ADMIN tx-sender)
@@ -65,7 +51,7 @@
 (map-set valid-zoning-types "Industrial" true)
 (map-set valid-zoning-types "Agricultural" true)
 
-;; --- SIP-009 NFT Trait Implementation ---
+;; --- SIP-009 NFT Standard Functions ---
 
 ;; Get the last token ID issued.
 (define-read-only (get-last-token-id)

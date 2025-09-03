@@ -26,7 +26,8 @@
 (define-constant ERR-ALREADY-VOTED u104)
 (define-constant ERR-VOTING-CLOSED u105)
 (define-constant ERR-PARCEL-OWNER-ONLY u106)
-(define-constant ERR-INVALID-ZONING_TYPE u107)
+(define-constant ERR-INVALID-ZONING-TYPE u107)
+(define-constant CONTRACT-NAME "geoledger")
 
 ;; --- Data Storage ---
 
@@ -53,19 +54,16 @@
   votes-against: uint
 })
 
-(define-map voter-registry (tuple uint principal) bool)
+(define-map voter-registry {proposal-id: uint, voter: principal} bool)
 
 ;; A list of valid zoning types, managed by the admin.
 (define-map valid-zoning-types (string-ascii 40) bool)
 
 ;; --- Initialization ---
-(begin
-  (map-set valid-zoning-types "Residential" true)
-  (map-set valid-zoning-types "Commercial" true)
-  (map-set valid-zoning-types "Industrial" true)
-  (map-set valid-zoning-types "Agricultural" true)
-)
-
+(map-set valid-zoning-types "Residential" true)
+(map-set valid-zoning-types "Commercial" true)
+(map-set valid-zoning-types "Industrial" true)
+(map-set valid-zoning-types "Agricultural" true)
 
 ;; --- SIP-009 NFT Trait Implementation ---
 
@@ -75,9 +73,12 @@
 )
 
 ;; Get the URI for a given parcel's metadata.
-;; In a real application, this would point to an off-chain resource like IPFS.
+;; Returns a static URI pattern since uint-to-ascii is not available.
 (define-read-only (get-token-uri (token-id uint))
-  (ok (some (concat "https://geoledger.api/parcels/" (uint-to-ascii token-id))))
+  (if (is-some (map-get? parcel-metadata token-id))
+    (ok (some "https://geoledger.api/parcels/metadata"))
+    (ok none)
+  )
 )
 
 ;; Get the owner of a specific parcel.
@@ -93,14 +94,13 @@
   )
 )
 
-
 ;; --- Contract Admin Functions ---
 
 ;; Register a new parcel of land. Only the contract administrator can do this.
 (define-public (register-parcel (owner principal) (gps-coords (string-ascii 64)) (area uint) (zoning (string-ascii 40)))
   (begin
     (asserts! (is-eq tx-sender CONTRACT-ADMIN) (err ERR-NOT-AUTHORIZED))
-    (asserts! (map-get? valid-zoning-types zoning) (err ERR-INVALID-ZONING_TYPE))
+    (asserts! (default-to false (map-get? valid-zoning-types zoning)) (err ERR-INVALID-ZONING-TYPE))
     (let ((new-id (+ (var-get last-parcel-id) u1)))
       (try! (nft-mint? geoledger-parcel new-id owner))
       (map-set parcel-metadata new-id {
@@ -122,7 +122,6 @@
   )
 )
 
-
 ;; --- Zoning Proposal and Voting Functions ---
 
 ;; Propose a change to a parcel's zoning classification.
@@ -130,7 +129,7 @@
 (define-public (propose-zoning-change (parcel-id uint) (new-zoning (string-ascii 40)))
   (let ((owner (unwrap! (nft-get-owner? geoledger-parcel parcel-id) (err ERR-PARCEL-NOT-FOUND))))
     (asserts! (is-eq tx-sender owner) (err ERR-PARCEL-OWNER-ONLY))
-    (asserts! (map-get? valid-zoning-types new-zoning) (err ERR-INVALID-ZONING_TYPE))
+    (asserts! (default-to false (map-get? valid-zoning-types new-zoning)) (err ERR-INVALID-ZONING-TYPE))
     (let ((proposal-id (+ (var-get proposal-counter) u1)))
       (map-set proposals proposal-id {
         proposer: tx-sender,
@@ -150,13 +149,13 @@
 (define-public (vote-on-proposal (proposal-id uint) (vote bool))
   (let ((proposal (unwrap! (map-get? proposals proposal-id) (err ERR-PROPOSAL-NOT-FOUND))))
     (asserts! (not (get is-approved proposal)) (err ERR-VOTING-CLOSED))
-    (asserts! (not (map-get? voter-registry (tuple proposal-id tx-sender))) (err ERR-ALREADY-VOTED))
+    (asserts! (is-none (map-get? voter-registry {proposal-id: proposal-id, voter: tx-sender})) (err ERR-ALREADY-VOTED))
 
-    (map-set voter-registry (tuple proposal-id tx-sender) true)
+    (map-set voter-registry {proposal-id: proposal-id, voter: tx-sender} true)
 
     (if vote
-      (map-set proposals proposal-id (merge proposal { votes-for: (+ (get votes-for proposal) u1) }))
-      (map-set proposals proposal-id (merge proposal { votes-against: (+ (get votes-against proposal) u1) }))
+      (map-set proposals proposal-id (merge proposal {votes-for: (+ (get votes-for proposal) u1)}))
+      (map-set proposals proposal-id (merge proposal {votes-against: (+ (get votes-against proposal) u1)}))
     )
     (ok true)
   )
@@ -174,20 +173,19 @@
           (parcel-id (get parcel-id proposal))
           (metadata (unwrap! (map-get? parcel-metadata parcel-id) (err ERR-PARCEL-NOT-FOUND)))
         )
-        (map-set parcel-metadata parcel-id (merge metadata { zoning-class: (get proposed-zoning proposal) }))
-        (map-set proposals proposal-id (merge proposal { is-approved: true }))
-        (print { message: "Proposal approved and zoning updated.", parcel-id: parcel-id })
+        (map-set parcel-metadata parcel-id (merge metadata {zoning-class: (get proposed-zoning proposal)}))
+        (map-set proposals proposal-id (merge proposal {is-approved: true}))
+        (print {event: "proposal-approved", parcel-id: parcel-id, proposal-id: proposal-id})
         (ok true)
       )
       (begin
-        (map-set proposals proposal-id (merge proposal { is-approved: true })) ;; Mark as closed (rejected)
-        (print { message: "Proposal rejected.", proposal-id: proposal-id })
+        (map-set proposals proposal-id (merge proposal {is-approved: true})) ;; Mark as closed (rejected)
+        (print {event: "proposal-rejected", proposal-id: proposal-id})
         (ok false)
       )
     )
   )
 )
-
 
 ;; --- Read-Only Functions ---
 
@@ -208,10 +206,15 @@
 
 ;; Get the total number of parcels registered.
 (define-read-only (get-parcel-count)
-  (ok (var-get last-parcel-id))
+  (var-get last-parcel-id)
 )
 
 ;; Get the total number of proposals made.
 (define-read-only (get-proposal-count)
-  (ok (var-get proposal-counter))
+  (var-get proposal-counter)
+)
+
+;; Check if a user has voted on a proposal.
+(define-read-only (has-voted (proposal-id uint) (voter principal))
+  (is-some (map-get? voter-registry {proposal-id: proposal-id, voter: voter}))
 )

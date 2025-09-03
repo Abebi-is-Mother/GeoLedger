@@ -13,7 +13,14 @@
 (define-constant ERR-VOTING-CLOSED u105)
 (define-constant ERR-PARCEL-OWNER-ONLY u106)
 (define-constant ERR-INVALID-ZONING-TYPE u107)
+(define-constant ERR-INVALID-INPUT u108)
 (define-constant CONTRACT-NAME "geoledger")
+
+;; Input validation constants
+(define-constant MIN-AREA u1)
+(define-constant MAX-AREA u1000000000) ;; 1 billion square meters
+(define-constant MAX-GPS-LENGTH u64)
+(define-constant MAX-ZONING-LENGTH u40)
 
 ;; --- Data Storage ---
 
@@ -44,6 +51,32 @@
 
 ;; A list of valid zoning types, managed by the admin.
 (define-map valid-zoning-types (string-ascii 40) bool)
+
+;; --- Input Validation Functions ---
+
+;; Validate GPS coordinates format (basic length check)
+(define-private (is-valid-gps-coords (coords (string-ascii 64)))
+  (and 
+    (> (len coords) u0)
+    (<= (len coords) MAX-GPS-LENGTH)
+  )
+)
+
+;; Validate area is within reasonable bounds
+(define-private (is-valid-area (area uint))
+  (and 
+    (>= area MIN-AREA)
+    (<= area MAX-AREA)
+  )
+)
+
+;; Validate zoning string
+(define-private (is-valid-zoning-string (zoning (string-ascii 40)))
+  (and 
+    (> (len zoning) u0)
+    (<= (len zoning) MAX-ZONING-LENGTH)
+  )
+)
 
 ;; --- Initialization ---
 (map-set valid-zoning-types "Residential" true)
@@ -76,6 +109,8 @@
 (define-public (transfer (token-id uint) (sender principal) (recipient principal))
   (begin
     (asserts! (is-eq tx-sender sender) (err ERR-NOT-AUTHORIZED))
+    (asserts! (is-some (map-get? parcel-metadata token-id)) (err ERR-PARCEL-NOT-FOUND))
+    (asserts! (not (is-eq sender recipient)) (err ERR-INVALID-INPUT))
     (nft-transfer? geoledger-parcel token-id sender recipient)
   )
 )
@@ -86,6 +121,9 @@
 (define-public (register-parcel (owner principal) (gps-coords (string-ascii 64)) (area uint) (zoning (string-ascii 40)))
   (begin
     (asserts! (is-eq tx-sender CONTRACT-ADMIN) (err ERR-NOT-AUTHORIZED))
+    (asserts! (is-valid-gps-coords gps-coords) (err ERR-INVALID-INPUT))
+    (asserts! (is-valid-area area) (err ERR-INVALID-INPUT))
+    (asserts! (is-valid-zoning-string zoning) (err ERR-INVALID-INPUT))
     (asserts! (default-to false (map-get? valid-zoning-types zoning)) (err ERR-INVALID-ZONING-TYPE))
     (let ((new-id (+ (var-get last-parcel-id) u1)))
       (try! (nft-mint? geoledger-parcel new-id owner))
@@ -104,6 +142,7 @@
 (define-public (add-zoning-type (zoning (string-ascii 40)))
   (begin
     (asserts! (is-eq tx-sender CONTRACT-ADMIN) (err ERR-NOT-AUTHORIZED))
+    (asserts! (is-valid-zoning-string zoning) (err ERR-INVALID-INPUT))
     (ok (map-set valid-zoning-types zoning true))
   )
 )
@@ -115,6 +154,7 @@
 (define-public (propose-zoning-change (parcel-id uint) (new-zoning (string-ascii 40)))
   (let ((owner (unwrap! (nft-get-owner? geoledger-parcel parcel-id) (err ERR-PARCEL-NOT-FOUND))))
     (asserts! (is-eq tx-sender owner) (err ERR-PARCEL-OWNER-ONLY))
+    (asserts! (is-valid-zoning-string new-zoning) (err ERR-INVALID-INPUT))
     (asserts! (default-to false (map-get? valid-zoning-types new-zoning)) (err ERR-INVALID-ZONING-TYPE))
     (let ((proposal-id (+ (var-get proposal-counter) u1)))
       (map-set proposals proposal-id {

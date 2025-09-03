@@ -73,11 +73,11 @@
 )
 
 ;; Get the URI for a given parcel's metadata.
-;; Returns a static URI pattern since uint-to-ascii is not available.
+;; Returns a static URI pattern with proper SIP-009 response format.
 (define-read-only (get-token-uri (token-id uint))
   (if (is-some (map-get? parcel-metadata token-id))
     (ok (some "https://geoledger.api/parcels/metadata"))
-    (ok none)
+    (err ERR-PARCEL-NOT-FOUND)
   )
 )
 
